@@ -1,10 +1,12 @@
 {
-  "name": "ada-compliance",
+  "name": "ada-pdf-compliance",
   "description": "Analyze and fix PDF accessibility metadata for ADA/Section 508/PDF-UA compliance. Auto-populates document properties, generates bookmarks, fixes link descriptions, generates structure trees for untagged PDFs, creates alt text for images using AI vision, and produces remediation worksheets for manual fixes.",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "author": {
     "name": "Anita Srinivasan"
   },
+  "repository": "https://github.com/anitasrinivasan/ada-pdf-compliance",
+  "license": "MIT",
   "keywords": [
     "accessibility",
     "ada",

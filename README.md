@@ -6,11 +6,23 @@ Point it at a PDF (or folder of PDFs) and it auto-fixes what it can: document ti
 
 ## Install
 
-```bash
-claude install github:anitasrinivasan/ada-pdf-compliance
+### Option 1: Plugin Marketplace (recommended)
+
+In Claude Code, run:
+
+```
+/plugin marketplace add https://github.com/anitasrinivasan/ada-pdf-compliance.git
+/plugin install ada-pdf-compliance
 ```
 
-Then install the Python dependency:
+### Option 2: Local Install
+
+```bash
+git clone https://github.com/anitasrinivasan/ada-pdf-compliance.git
+claude --plugin-dir ./ada-pdf-compliance
+```
+
+### Python Dependency
 
 ```bash
 pip install pypdf
@@ -21,13 +33,13 @@ pip install pypdf
 In Claude Code, run:
 
 ```
-/ada-check path/to/document.pdf
+/ada-pdf-compliance:ada-check path/to/document.pdf
 ```
 
 Or point it at a folder to batch-process:
 
 ```
-/ada-check path/to/folder/
+/ada-pdf-compliance:ada-check path/to/folder/
 ```
 
 You can also just describe what you want:
