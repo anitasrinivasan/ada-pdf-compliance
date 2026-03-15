@@ -101,11 +101,12 @@
 
 This plugin offers two processing paths for untagged PDFs:
 
-### Path A: Preview-Compatible (pypdf only) — Default
-- Uses `pdf_metadata_fix.py` (pypdf library)
-- Fixes: title, subject, language, display title, tagged flag, PDF/UA, bookmarks, link descriptions
+### Path A: Acrobat + Plugin (pypdf) — Default
+- User runs Acrobat Pro > Accessibility > Autotag Document **first** on the original PDF
+- Then `pdf_metadata_fix.py` (pypdf) applies remaining fixes on the tagged file:
+  title, subject, language, display title, tagged flag, PDF/UA, bookmarks, link descriptions, alt text
 - ✅ Opens in macOS Preview, browsers, Adobe Acrobat, all PDF viewers
-- ❌ Does NOT generate a structure tree — user runs Acrobat Pro > Accessibility > Autotag Document
+- ✅ Structure tree comes from Acrobat (higher quality than automated heuristics)
 
 ### Path B: Maximum Automation (pikepdf) — Opt-In
 - Uses `pdf_structure_generator.py` (pikepdf library)

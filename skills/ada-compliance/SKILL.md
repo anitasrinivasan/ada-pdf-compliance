@@ -79,13 +79,15 @@ get unstructured text with no headings, lists, or figure descriptions.
 
 > This PDF has no structure tree (the most important feature for screen readers).
 >
-> **Option A — Preview-compatible** *(recommended if you have Adobe Acrobat Pro)*
-> I'll auto-fix: title, subject, language, bookmarks, link descriptions, PDF/UA flag.
-> You then run: Acrobat > Accessibility > Autotag Document to add the structure tree.
+> **Option A — Acrobat + plugin** *(recommended if you have Adobe Acrobat Pro)*
+> You first run Acrobat > Accessibility > Autotag Document on this PDF. Then give me
+> the tagged file and I'll auto-fix everything else: title, subject, language, bookmarks,
+> link descriptions, PDF/UA flag, and alt text — taking advantage of the structure tree
+> Acrobat created.
 > ✅ Opens everywhere including macOS Preview.
 >
 > **Option B — Maximum automation** *(requires pikepdf)*
-> I'll auto-fix everything above PLUS generate a structure tree with headings.
+> I'll auto-fix everything including generating a structure tree with headings.
 > ⚠️ The output will NOT render in macOS Preview (pages appear blank).
 > ✅ Opens fine in web browsers (Chrome, Safari, Brave, Edge) and Adobe Acrobat.
 >
@@ -96,17 +98,38 @@ Recommend Option B if they don't have Acrobat Pro and primarily use browsers.
 
 ### 5. Apply Fixes
 
-#### Path A: Preview-Compatible (pypdf only)
+#### Path A: Acrobat First, Then pypdf (Preview-Compatible)
 
-Write the fixes JSON to a temp file, then run:
-```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" "<pdf_path>" "<fixes_json_path>" 2>/dev/null
-```
+1. **Instruct the user to run Acrobat Autotag first:**
 
-Clean up the temp fixes JSON.
+   > Please open the original PDF in Adobe Acrobat Pro and run:
+   > **Accessibility > Autotag Document**
+   >
+   > Save the file (or Save As), then provide the path to the tagged PDF.
+   > I'll then apply the remaining accessibility fixes on top of the structure tree
+   > that Acrobat generated.
 
-The output `_accessible.pdf` will have metadata, bookmarks, link descriptions, and PDF/UA
-identifier — but NO structure tree. The checklist should include manual Acrobat steps.
+2. **Wait for the user to provide the tagged file path.** Once they do, re-run the
+   audit on the tagged file to confirm the structure tree now exists:
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" "<tagged_pdf_path>" 2>/dev/null
+   ```
+   Verify `structure.has_structure_tree == true`. If it's still false, the user may
+   not have saved correctly — ask them to try again.
+
+3. **Re-determine fixes** based on the new audit of the tagged file. Now that the
+   structure tree exists, set `set_tagged: true` and generate alt text targeting the
+   actual `/Figure` elements in the structure tree.
+
+4. **Run pypdf on the tagged file:**
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" "<tagged_pdf_path>" "<fixes_json_path>" 2>/dev/null
+   ```
+
+   Clean up the temp fixes JSON.
+
+   The output `_accessible.pdf` will have the Acrobat structure tree PLUS all metadata,
+   bookmarks, link descriptions, and PDF/UA identifier.
 
 #### Path B: Maximum Automation (pikepdf)
 
@@ -136,20 +159,18 @@ Show a structured checklist. Adapt based on which path was used:
 #### Path A Checklist:
 ```markdown
 ## Auto-Fixed
+- [x] Structure tree (Acrobat Autotag)
 - [x] Document title set to "<title>"
 - [x] Language set to en-US
+- [x] Tagged PDF flag set
 - [x] Display title enabled
 - [x] PDF/UA identifier added
 - [x] Bookmarks generated for N pages
 - [x] Descriptive text added to N links
-
-## Needs Manual Fix (Acrobat Pro)
-- [ ] **Structure tree** — Open in Acrobat Pro > Accessibility > Autotag Document
-- [ ] **Heading hierarchy** — After autotagging, verify H1/H2/H3 levels match slide structure
-- [ ] **Figure alt text** — After autotagging, add alt text to each Figure in the Tags panel
-      (suggested alt text provided below)
+- [x] Alt text added to N figures
 
 ## Needs Human Review
+- [ ] Verify heading hierarchy matches document structure
 - [ ] Review alt text accuracy for each image
 - [ ] Check reading order on multi-column slides
 

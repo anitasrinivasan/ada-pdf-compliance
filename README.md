@@ -84,9 +84,9 @@ Generates a fixes plan and applies it:
 
 When a PDF has no structure tree (common with Google Slides exports), you're offered a choice:
 
-**Path A (default)** -- Uses `pypdf` only. Output opens everywhere including macOS Preview. You then run Adobe Acrobat's Autotag for the structure tree.
+**Path A -- Acrobat + plugin (default)** -- You first run Acrobat Pro's Autotag to generate a structure tree, then provide the tagged file back. The plugin applies all remaining fixes (metadata, bookmarks, link descriptions, alt text, PDF/UA flag) on top of Acrobat's structure tree. Output opens everywhere including macOS Preview.
 
-**Path B (opt-in)** -- Uses `pikepdf` to generate a structure tree automatically. Output works in browsers and Acrobat but not macOS Preview.
+**Path B -- Maximum automation (opt-in)** -- Uses `pikepdf` to generate a structure tree automatically along with all other fixes. Output works in browsers and Acrobat but not macOS Preview.
 
 ## Requirements
 
@@ -95,21 +95,24 @@ When a PDF has no structure tree (common with Google Slides exports), you're off
 - `pypdf` (required): `pip install pypdf`
 - `pikepdf` (optional, for Path B): `pip install pikepdf`
 
-## Example Output
+## Example Output (Path A)
 
 ```
 ## Auto-Fixed
+- [x] Structure tree (Acrobat Autotag)
 - [x] Document title set to "Spring 2026 Class 2: Technical Due Process"
 - [x] Language set to en-US
+- [x] Tagged PDF flag set
 - [x] Display title enabled
 - [x] PDF/UA identifier added
 - [x] Bookmarks generated for 101 pages
 - [x] Descriptive text added to 7 links
+- [x] Alt text added to 12 figures
 
-## Needs Manual Fix (Acrobat Pro)
-- [ ] Structure tree -- Open in Acrobat Pro > Accessibility > Autotag Document
-- [ ] Heading hierarchy -- Verify H1/H2/H3 levels after autotagging
-- [ ] Figure alt text -- Add alt text in the Tags panel
+## Needs Human Review
+- [ ] Verify heading hierarchy matches document structure
+- [ ] Review alt text accuracy for each image
+- [ ] Check reading order on multi-column slides
 
 Saved: document_accessible.pdf
 ```
