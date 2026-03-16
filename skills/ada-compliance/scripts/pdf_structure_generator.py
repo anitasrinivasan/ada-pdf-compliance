@@ -30,7 +30,7 @@ import sys
 # Check for pikepdf availability
 try:
     import pikepdf
-    from pikepdf import Dictionary, Name, Array, String, Pdf
+    from pikepdf import Dictionary, Name, Array, String, Pdf, Operator
     PIKEPDF_AVAILABLE = True
 except ImportError:
     PIKEPDF_AVAILABLE = False
@@ -366,6 +366,113 @@ def _detect_page_images(pike_page, image_counts=None):
     return images
 
 
+def _tag_page_content_stream(pdf, pike_page, text_mcids, figure_mcids,
+                             content_image_names):
+    """Insert BDC/EMC marked content operators into a page's content stream.
+
+    Wraps BT/ET text blocks with tagged BDC (using MCIDs from the structure
+    tree). Wraps Do operators for content images as /Figure. All remaining
+    content (graphics, decorative images) is marked as /Artifact.
+
+    This enables the TaggedCont check in Acrobat's accessibility audit.
+
+    Args:
+        pdf: pikepdf.Pdf instance
+        pike_page: pikepdf page object
+        text_mcids: list of (mcid, role) for text structure elements
+        figure_mcids: list of mcid values for figure structure elements
+        content_image_names: set of XObject names that are content images
+
+    Returns:
+        Number of content blocks tagged
+    """
+    try:
+        raw_ops = pikepdf.parse_content_stream(pike_page)
+    except Exception as e:
+        print(f"Warning: cannot parse content stream: {e}", file=sys.stderr)
+        return 0
+
+    tagged_ops = []
+    text_idx = 0
+    fig_idx = 0
+    tagged_count = 0
+    artifact_buf = []
+
+    def flush_artifacts():
+        if artifact_buf:
+            tagged_ops.append(([Name("/Artifact")], Operator("BMC")))
+            tagged_ops.extend(artifact_buf)
+            tagged_ops.append(([], Operator("EMC")))
+            artifact_buf.clear()
+
+    i = 0
+    while i < len(raw_ops):
+        operands, operator = raw_ops[i]
+        op_str = str(operator)
+
+        if op_str == "BT":
+            flush_artifacts()
+            # Collect entire BT...ET block
+            bt_block = [(operands, operator)]
+            i += 1
+            while i < len(raw_ops):
+                o, p = raw_ops[i]
+                bt_block.append((o, p))
+                if str(p) == "ET":
+                    break
+                i += 1
+
+            if text_idx < len(text_mcids):
+                mcid, role = text_mcids[text_idx]
+                text_idx += 1
+                tagged_ops.append((
+                    [Name(f"/{role}"), Dictionary({"/MCID": mcid})],
+                    Operator("BDC"),
+                ))
+                tagged_ops.extend(bt_block)
+                tagged_ops.append(([], Operator("EMC")))
+                tagged_count += 1
+            else:
+                # Extra text block not in structure tree — mark as artifact
+                tagged_ops.append(([Name("/Artifact")], Operator("BMC")))
+                tagged_ops.extend(bt_block)
+                tagged_ops.append(([], Operator("EMC")))
+
+        elif op_str == "Do":
+            xobj_name = str(operands[0]).lstrip("/") if operands else ""
+            if xobj_name in content_image_names and fig_idx < len(figure_mcids):
+                flush_artifacts()
+                mcid = figure_mcids[fig_idx]
+                fig_idx += 1
+                tagged_ops.append((
+                    [Name("/Figure"), Dictionary({"/MCID": mcid})],
+                    Operator("BDC"),
+                ))
+                tagged_ops.append((operands, operator))
+                tagged_ops.append(([], Operator("EMC")))
+                tagged_count += 1
+            else:
+                artifact_buf.append((operands, operator))
+
+        else:
+            artifact_buf.append((operands, operator))
+
+        i += 1
+
+    flush_artifacts()
+
+    # Write tagged content stream back to page
+    try:
+        new_content = pikepdf.unparse_content_stream(tagged_ops)
+        pike_page.Contents = pdf.make_stream(new_content)
+    except Exception as e:
+        print(f"Warning: failed to write tagged content stream: {e}",
+              file=sys.stderr)
+        return 0
+
+    return tagged_count
+
+
 def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                             fixes=None):
     """Generate a tagged structure tree for an untagged PDF.
@@ -534,6 +641,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
 
     parent_tree_nums = Array()
     total_elements = 0
+    all_page_mcid_data = {}  # page_num → list of (mcid, role) for BDC/EMC insertion
 
     for page_num, page_elements in enumerate(all_page_elements):
         if not page_elements:
@@ -699,14 +807,42 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
 
         doc_elem["/K"].append(sect_elem)
 
-        # NOTE: We intentionally skip inserting BDC/EMC marked content
-        # operators into the page content streams. While MCID linking is
-        # required for strict PDF/UA validation, the regex-based content
-        # stream modification corrupts rendering in Preview.app (pages
-        # appear blank). The structure tree hierarchy alone still provides
-        # semantic navigation for screen readers (headings, lists, etc.)
-        # and passes the "is tagged" check. Full MCID linking should be
-        # done in Adobe Acrobat Pro for production compliance.
+        # Store per-page MCID data for content stream tagging
+        all_page_mcid_data[page_num] = page_mcid_ops
+
+    # Phase 4: Insert BDC/EMC marked content into page content streams.
+    # This wraps every BT/ET text block and content image (Do) with tagged
+    # BDC/EMC operators, and marks all other content as /Artifact.
+    # Enables the TaggedCont check in Acrobat's accessibility audit.
+    tagged_pages = 0
+    for page_num in range(page_count):
+        if page_num not in all_page_mcid_data:
+            continue
+
+        page_mcid_ops = all_page_mcid_data[page_num]
+
+        # Split MCIDs: text elements vs figure elements
+        text_mcids = [(mcid, role) for mcid, role in page_mcid_ops
+                      if role != "Figure"]
+        figure_mcids = [mcid for mcid, role in page_mcid_ops
+                        if role == "Figure"]
+
+        # Get content image XObject names for this page (exclude repeated)
+        page_image_names = set()
+        for img in all_raw_images[page_num]:
+            if img.get("img_key") not in repeated_images:
+                page_image_names.add(img["name"])
+
+        try:
+            count = _tag_page_content_stream(
+                pdf, pdf.pages[page_num],
+                text_mcids, figure_mcids, page_image_names,
+            )
+            if count > 0:
+                tagged_pages += 1
+        except Exception as e:
+            print(f"Warning: content stream tagging failed on page "
+                  f"{page_num + 1}: {e}", file=sys.stderr)
 
     # Set the parent tree
     parent_tree = pdf.make_indirect(Dictionary({
