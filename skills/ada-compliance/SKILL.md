@@ -18,8 +18,9 @@ accessibility metadata and fixing what can be fixed programmatically.
 
 The scripts are bundled with this skill at:
 - Analysis: `${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py`
-- Fix (Preview-compatible): `${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py`
-- Structure tree (pikepdf, NOT Preview-compatible): `${CLAUDE_SKILL_DIR}/scripts/pdf_structure_generator.py`
+- Fix (metadata-only, for pre-tagged PDFs): `${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py`
+- Structure tree + metadata (full automation): `${CLAUDE_SKILL_DIR}/scripts/pdf_structure_generator.py`
+- Regression test: `${CLAUDE_SKILL_DIR}/scripts/regression_test.py`
 
 **Required:** `pypdf` — `pip install pypdf`
 **Optional:** `pikepdf` — `pip install pikepdf` (enables structure tree generation for untagged PDFs)
@@ -69,47 +70,33 @@ Build a fixes JSON object:
 - Generate concise alt text for each image.
 - Add to `alt_texts` dict mapping figure index to text.
 
-### 4. Check for Untagged PDFs — User Choice
+### 4. Check for Untagged PDFs
 
 If the audit reports `structure.has_structure_tree == false`, the PDF has no structure tree.
 This is the single most important accessibility feature — without it, screen readers
 get unstructured text with no headings, lists, or figure descriptions.
 
-**Present this choice to the user:**
+**Ask the user:**
 
 > This PDF has no structure tree (the most important feature for screen readers).
 >
-> **Option A — Acrobat + plugin** *(recommended if you have Adobe Acrobat Pro)*
-> You first run Acrobat > Accessibility > Autotag Document on this PDF. Then give me
-> the tagged file and I'll auto-fix everything else: title, subject, language, bookmarks,
-> link descriptions, PDF/UA flag, and alt text — taking advantage of the structure tree
-> Acrobat created.
-> ✅ Opens everywhere including macOS Preview.
+> **Do you have an Acrobat-tagged version of this PDF?**
+> If you've already run Adobe Acrobat Pro > Accessibility > Autotag Document on this file,
+> give me the tagged version and I'll apply all remaining fixes (metadata, bookmarks,
+> link descriptions, alt text, PDF/UA flag) on top of Acrobat's structure tree.
 >
-> **Option B — Maximum automation** *(requires pikepdf)*
-> I'll auto-fix everything including generating a structure tree with headings.
-> ⚠️ The output will NOT render in macOS Preview (pages appear blank).
-> ✅ Opens fine in web browsers (Chrome, Safari, Brave, Edge) and Adobe Acrobat.
+> **If not, I'll handle everything automatically** — I'll generate a structure tree with
+> headings, lists, figures, and tables, plus all metadata fixes, in one pass.
 >
-> Which approach?
-
-**If user is unsure:** Recommend Option A if they have Acrobat Pro access.
-Recommend Option B if they don't have Acrobat Pro and primarily use browsers.
+> Note: Acrobat's structure tree is higher quality (deeper heading hierarchy, better table
+> detection, MCID-linked content). But our automated path produces a solid structure tree
+> that works well for most documents, especially slide decks.
 
 ### 5. Apply Fixes
 
-#### Path A: Acrobat First, Then pypdf (Preview-Compatible)
+#### Path A: User Provides Acrobat-Tagged PDF
 
-1. **Instruct the user to run Acrobat Autotag first:**
-
-   > Please open the original PDF in Adobe Acrobat Pro and run:
-   > **Accessibility > Autotag Document**
-   >
-   > Save the file (or Save As), then provide the path to the tagged PDF.
-   > I'll then apply the remaining accessibility fixes on top of the structure tree
-   > that Acrobat generated.
-
-2. **Wait for the user to provide the tagged file path.** Once they do, re-run the
+1. **Wait for the user to provide the tagged file path.** Once they do, re-run the
    audit on the tagged file to confirm the structure tree now exists:
    ```bash
    python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" "<tagged_pdf_path>" 2>/dev/null
@@ -117,11 +104,11 @@ Recommend Option B if they don't have Acrobat Pro and primarily use browsers.
    Verify `structure.has_structure_tree == true`. If it's still false, the user may
    not have saved correctly — ask them to try again.
 
-3. **Re-determine fixes** based on the new audit of the tagged file. Now that the
+2. **Re-determine fixes** based on the new audit of the tagged file. Now that the
    structure tree exists, set `set_tagged: true` and generate alt text targeting the
    actual `/Figure` elements in the structure tree.
 
-4. **Run pypdf on the tagged file:**
+3. **Run pypdf on the tagged file:**
    ```bash
    python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" "<tagged_pdf_path>" "<fixes_json_path>" 2>/dev/null
    ```
@@ -131,7 +118,7 @@ Recommend Option B if they don't have Acrobat Pro and primarily use browsers.
    The output `_accessible.pdf` will have the Acrobat structure tree PLUS all metadata,
    bookmarks, link descriptions, and PDF/UA identifier.
 
-#### Path B: Maximum Automation (pikepdf)
+#### Path B: Full Automation (pikepdf)
 
 1. Check if pikepdf is available:
    ```bash
@@ -150,7 +137,7 @@ Recommend Option B if they don't have Acrobat Pro and primarily use browsers.
 
 3. **If pikepdf is NOT available:**
    Tell the user: "pikepdf is not installed. Run `pip install pikepdf` to enable
-   structure tree generation, or switch to Option A."
+   structure tree generation, or provide an Acrobat-tagged version of the PDF."
 
 ### 6. Present Results Inline
 
@@ -175,7 +162,6 @@ Show a structured checklist. Adapt based on which path was used:
 - [ ] Check reading order on multi-column slides
 
 Saved: `filename_accessible.pdf`
-✅ Opens in Preview, browsers, and all PDF viewers.
 ```
 
 #### Path B Checklist:
@@ -187,16 +173,14 @@ Saved: `filename_accessible.pdf`
 - [x] PDF/UA identifier added
 - [x] Bookmarks generated for N pages
 - [x] Descriptive text added to N links
-- [x] Structure tree generated (N elements)
+- [x] Structure tree generated (N elements: headings, lists, figures, tables)
 
 ## Needs Human Review
-- [ ] Verify heading hierarchy matches slide structure (heuristic-based)
+- [ ] Verify heading hierarchy matches document structure (heuristic-based)
 - [ ] Review alt text accuracy for each image
 - [ ] Check reading order on multi-column slides
 
 Saved: `filename_accessible.pdf`
-⚠️ Note: This file may not render correctly in macOS Preview (pages appear blank).
-   It opens normally in web browsers and Adobe Acrobat.
 ```
 
 After showing the checklist, ask:
@@ -223,7 +207,7 @@ When processing a folder:
    |------|-------|------|------|------|----------|----------------|
    ```
 3. Ask: "Fix all files, or select specific ones?"
-4. Ask Path A or B (applies to all selected files)
+4. Apply fixes using the appropriate path per file
 5. For full audit details on a specific file, re-run without `--summary`:
    ```bash
    python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" specific_file.pdf 2>/dev/null
@@ -246,5 +230,4 @@ See `${CLAUDE_SKILL_DIR}/references/compliance-checklist.md` for the full checkl
 - For charts/graphs: describe the data story, not just "a bar chart"
 - For link descriptions: use the URL + page context to write meaningful text
 - Encrypted/password-protected PDFs cannot be processed — inform the user
-- **Path B warning**: Always remind the user that pikepdf output won't render in macOS Preview
 - **Never run pypdf's pdf_metadata_fix.py on pikepdf output** — this corrupts the file

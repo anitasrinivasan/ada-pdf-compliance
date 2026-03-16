@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
-PDF Structure Tree Generator for Slide-Deck PDFs
+PDF Structure Tree Generator
 
-Generates a tagged structure tree for untagged PDFs (typically Google Slides
-or PowerPoint exports). Uses font metrics and positioning heuristics to
-classify page content into headings, paragraphs, lists, and figures.
+Generates a tagged structure tree for untagged PDFs (slide decks, text
+documents, academic papers, etc.). Uses font metrics and positioning
+heuristics to classify page content into headings (H1-H4), paragraphs,
+lists (with Lbl/LBody), tables, and figures.
 
 Also applies metadata fixes (title, subject, language, bookmarks, link
 descriptions, PDF/UA identifier) in a single pass using pikepdf, so the
 output does not need to be re-processed by pypdf.
-
-IMPORTANT — Preview.app compatibility:
-    pikepdf's PDF re-serialization produces files that render as blank pages
-    in macOS Preview.app. The output opens correctly in web browsers (Chrome,
-    Safari, Brave, Edge) and Adobe Acrobat. If Preview compatibility is
-    required, use pdf_metadata_fix.py (pypdf-only) instead and have the user
-    run Acrobat Pro > Accessibility > Autotag Document for the structure tree.
 
 Usage:
     python3 pdf_structure_generator.py <input_pdf> [output_pdf] [fixes_json]
@@ -93,57 +87,132 @@ def extract_page_content(reader, page_num):
     return items
 
 
-def classify_content(items, page_height=792):
+def detect_document_type(all_page_items, page_count):
+    """Detect whether the PDF is a slide deck or a text document.
+
+    Heuristics:
+    - Slide decks: few text items per page (typically <30), one large title
+    - Text documents: many text items per page (typically >30), dense text
+
+    Returns "slides" or "document".
+    """
+    if page_count == 0 or not all_page_items:
+        return "slides"
+
+    items_per_page = []
+    for page_items in all_page_items:
+        items_per_page.append(len(page_items))
+
+    avg_items = sum(items_per_page) / len(items_per_page) if items_per_page else 0
+
+    # Slide decks typically have <30 text items per page
+    # Text documents have >40 text items per page
+    if avg_items > 40:
+        return "document"
+    return "slides"
+
+
+def classify_content(items, page_height=792, doc_type="slides",
+                     is_first_page=False, global_max_size=None):
     """Classify content items into semantic roles using heuristics.
 
-    For slide decks:
-    - Largest/boldest text near top → heading
-    - Bullet-prefixed text → list items
-    - Other text → paragraphs
-    - (Figures are detected separately from non-text regions)
+    Handles both slide decks and text documents differently:
+    - Slides: first large text on page → H1, other large → H2
+    - Documents: only first page top text → H1, bold section headers → H2,
+      sub-headers → H3, smaller bold → H4
 
-    Returns a list of classified blocks.
+    Returns a list of classified blocks with bullet text preserved for
+    Lbl/LBody splitting.
     """
     if not items:
         return []
 
+    # Sort by y-position descending (top of page first)
+    items_sorted = sorted(items, key=lambda x: -x["y"])
+
     # Find size statistics
-    sizes = [item["size"] for item in items]
+    sizes = [item["size"] for item in items_sorted]
     max_size = max(sizes)
     median_size = sorted(sizes)[len(sizes) // 2]
 
-    blocks = []
-    bullet_pattern = re.compile(r"^[\u2022\u2023\u25E6\u2043\u2219•\-\*]\s*")
+    # For slides: use per-page max size so each slide's title is detected
+    # For documents: use global max for consistent cross-page heading levels
+    if doc_type == "slides":
+        ref_max = max_size  # per-page max
+    else:
+        ref_max = global_max_size if global_max_size else max_size
 
-    for item in items:
+    blocks = []
+    bullet_pattern = re.compile(r"^([\u2022\u2023\u25E6\u2043\u2219•\-\*])\s*")
+    h1_assigned_this_page = False
+
+    for item in items_sorted:
         text = item["text"]
         size = item["size"]
         y = item["y"]
         bold = item["bold"]
 
-        # Classification heuristics
-        if size >= max_size * 0.85 and (bold or size > median_size * 1.3):
-            # Large and/or bold text — heading
-            # H1 if it's the biggest, H2 if slightly smaller
-            if size >= max_size * 0.95:
-                role = "H1"
+        # Check for bullet
+        bullet_match = bullet_pattern.match(text)
+        if bullet_match:
+            bullet_char = bullet_match.group(1)
+            body_text = bullet_pattern.sub("", text)
+            blocks.append({
+                "role": "LI",
+                "text": body_text,
+                "bullet": bullet_char,
+                "size": size,
+                "x": item["x"],
+                "y": y,
+            })
+            continue
+
+        # Heading classification — different for slides vs documents
+        is_large = size >= ref_max * 0.85 and (bold or size > median_size * 1.3)
+
+        if doc_type == "slides":
+            # Slides: first large text on page = H1, rest = H2, smaller = H3
+            # Use per-page max so each slide's title hits the threshold
+            if is_large:
+                if not h1_assigned_this_page and size >= max_size * 0.95:
+                    role = "H1"
+                    h1_assigned_this_page = True
+                elif size >= max_size * 0.85:
+                    role = "H2"
+                elif size >= max_size * 0.70:
+                    role = "H3"
+                else:
+                    role = "P"
+            elif size < median_size * 0.8:
+                role = "P"
             else:
-                role = "H2"
-        elif bullet_pattern.match(text):
-            role = "LI"
-            text = bullet_pattern.sub("", text)
-        elif size < median_size * 0.8:
-            # Smaller text — could be footnote or caption
-            role = "P"
+                role = "P"
         else:
-            role = "P"
+            # Document mode: stricter heading assignment
+            # H1: only on first page, largest text at top
+            # H2: bold text at the same size as section headers
+            # H3: bold text at a smaller tier
+            # H4: even smaller bold
+            if is_first_page and not h1_assigned_this_page and size >= ref_max * 0.95:
+                role = "H1"
+                h1_assigned_this_page = True
+            elif bold and size >= ref_max * 0.85:
+                role = "H2"
+            elif bold and size >= ref_max * 0.70:
+                role = "H3"
+            elif bold and size >= ref_max * 0.55:
+                role = "H4"
+            elif size < median_size * 0.8:
+                role = "P"
+            else:
+                role = "P"
 
         blocks.append({
             "role": role,
             "text": text,
             "size": size,
             "x": item["x"],
-            "y": item["y"],
+            "y": y,
         })
 
     # Group consecutive list items
@@ -162,10 +231,94 @@ def classify_content(items, page_height=792):
     return grouped
 
 
-def _detect_page_images(pike_page):
-    """Detect images on a PDF page by checking XObject resources.
+def detect_tables(items, page_width=612):
+    """Detect tabular layouts by clustering text items by x-position.
 
-    Returns a list of image names found on the page.
+    If 3+ distinct x-columns are found with consistent alignment across
+    3+ rows, the region is classified as a table.
+
+    Returns a list of table structures with rows and cells.
+    """
+    if len(items) < 6:
+        return []
+
+    # Cluster by x-position (±8px tolerance)
+    x_tolerance = 8
+    x_clusters = {}  # cluster_center → list of items
+    for item in items:
+        x = item["x"]
+        matched = False
+        for center in list(x_clusters.keys()):
+            if abs(x - center) <= x_tolerance:
+                x_clusters[center].append(item)
+                matched = True
+                break
+        if not matched:
+            x_clusters[x] = [item]
+
+    # Need at least 3 columns for a table
+    if len(x_clusters) < 3:
+        return []
+
+    # Sort columns by x-position
+    sorted_columns = sorted(x_clusters.keys())
+
+    # Cluster items by y-position to find rows (±5px tolerance)
+    y_tolerance = 5
+    y_positions = set()
+    for item in items:
+        y_positions.add(round(item["y"] / y_tolerance) * y_tolerance)
+
+    # Need at least 3 rows
+    if len(y_positions) < 3:
+        return []
+
+    # Build row-column grid: check that most rows have entries in most columns
+    sorted_rows = sorted(y_positions, reverse=True)  # top to bottom
+    grid_rows = []
+    for y_center in sorted_rows:
+        row_cells = []
+        for x_center in sorted_columns:
+            cell_items = [
+                item for item in items
+                if abs(item["x"] - x_center) <= x_tolerance
+                and abs(item["y"] - y_center) <= y_tolerance
+            ]
+            if cell_items:
+                row_cells.append(" ".join(c["text"] for c in cell_items))
+            else:
+                row_cells.append("")
+        # Only count as a row if at least half the columns have content
+        filled = sum(1 for c in row_cells if c)
+        if filled >= len(sorted_columns) * 0.5:
+            grid_rows.append(row_cells)
+
+    # Need at least 3 qualifying rows to call it a table
+    if len(grid_rows) < 3:
+        return []
+
+    return [{
+        "rows": grid_rows,
+        "num_columns": len(sorted_columns),
+        "num_rows": len(grid_rows),
+    }]
+
+
+def _detect_page_images(pike_page, image_counts=None):
+    """Detect content images on a PDF page by checking XObject resources.
+
+    Filters out:
+    - Tiny images (<50x50 pixels) — likely icons/bullets
+    - Extreme aspect ratios (>5:1 or <1:5) — likely decorative borders/lines
+    - Images that appear on most pages (tracked via image_counts) — likely
+      headers/footers/logos
+
+    Args:
+        pike_page: pikepdf page object
+        image_counts: optional dict tracking how many pages each image name
+                      appears on (for repeated-image filtering)
+
+    Returns a list of image dicts found on the page.
     """
     images = []
     try:
@@ -181,16 +334,30 @@ def _detect_page_images(pike_page):
                 if hasattr(xobj, "get"):
                     subtype = str(xobj.get("/Subtype", ""))
                     if subtype in ("/Image", "Image"):
-                        # Get image dimensions for context
                         width = int(xobj.get("/Width", 0))
                         height = int(xobj.get("/Height", 0))
-                        # Skip tiny images (likely icons/bullets, not content figures)
-                        if width > 50 and height > 50:
-                            images.append({
-                                "name": str(name),
-                                "width": width,
-                                "height": height,
-                            })
+
+                        # Skip tiny images (icons/bullets)
+                        if width <= 50 or height <= 50:
+                            continue
+
+                        # Skip extreme aspect ratios (decorative lines/borders)
+                        if height > 0 and width > 0:
+                            aspect = width / height
+                            if aspect > 5 or aspect < 0.2:
+                                continue
+
+                        # Track for repeated-image filtering
+                        img_key = f"{width}x{height}"
+                        if image_counts is not None:
+                            image_counts[img_key] = image_counts.get(img_key, 0) + 1
+
+                        images.append({
+                            "name": str(name),
+                            "width": width,
+                            "height": height,
+                            "img_key": img_key,
+                        })
             except Exception:
                 continue
     except Exception:
@@ -238,22 +405,52 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
     # Use pikepdf for PDF modification
     pdf = Pdf.open(input_path)
 
-    # Build structure elements per page
-    all_page_elements = []
-    mcid_counter = 0
-    figure_index = 0  # Global figure counter across all pages
-
+    # Phase 1: Extract all page content for document type detection
+    all_raw_items = []
     for page_num in range(page_count):
         items = extract_page_content(reader, page_num)
-        classified = classify_content(items)
+        all_raw_items.append(items)
 
-        # Detect images on this page
-        page_images = _detect_page_images(pdf.pages[page_num])
+    # Detect document type (slides vs text document)
+    doc_type = detect_document_type(all_raw_items, page_count)
+
+    # Compute global max font size for consistent heading detection
+    all_sizes = [item["size"] for page_items in all_raw_items
+                 for item in page_items if item["size"] > 0]
+    global_max_size = max(all_sizes) if all_sizes else 12
+
+    # Phase 2: First pass — detect images on all pages to identify repeated ones
+    image_counts = {}  # img_key → count of pages it appears on
+    all_raw_images = []
+    for page_num in range(page_count):
+        page_images = _detect_page_images(pdf.pages[page_num], image_counts)
+        all_raw_images.append(page_images)
+
+    # Determine which images are repeated (appear on >80% of pages = logo/header)
+    repeated_threshold = max(3, int(page_count * 0.8))
+    repeated_images = {k for k, v in image_counts.items() if v >= repeated_threshold}
+
+    # Phase 3: Classify content and build structure elements
+    all_page_elements = []
+    mcid_counter = 0
+    figure_index = 0
+
+    for page_num in range(page_count):
+        items = all_raw_items[page_num]
+        classified = classify_content(
+            items,
+            doc_type=doc_type,
+            is_first_page=(page_num == 0),
+            global_max_size=global_max_size,
+        )
+
+        # Detect tables from raw items
+        tables = detect_tables(items)
 
         page_elements = []
         for block in classified:
             if block.get("children"):
-                # List with children
+                # List with children — now with Lbl/LBody structure
                 list_elem = {
                     "role": "L",
                     "children": [],
@@ -263,6 +460,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                         "role": "LI",
                         "mcid": mcid_counter,
                         "text": child["text"],
+                        "bullet": child.get("bullet", "\u2022"),
                     })
                     mcid_counter += 1
                 page_elements.append(list_elem)
@@ -274,8 +472,35 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                 })
                 mcid_counter += 1
 
-        # Add Figure elements for detected images
-        for img in page_images:
+        # Add Table elements for detected tables
+        for table in tables:
+            table_elem = {
+                "role": "Table",
+                "rows": [],
+            }
+            for row_idx, row in enumerate(table["rows"]):
+                row_elem = {
+                    "role": "TR",
+                    "cells": [],
+                }
+                for cell_text in row:
+                    # First row gets TH, rest get TD
+                    cell_role = "TH" if row_idx == 0 else "TD"
+                    row_elem["cells"].append({
+                        "role": cell_role,
+                        "mcid": mcid_counter,
+                        "text": cell_text,
+                    })
+                    mcid_counter += 1
+                table_elem["rows"].append(row_elem)
+            page_elements.append(table_elem)
+
+        # Add Figure elements for detected images (with filtering)
+        for img in all_raw_images[page_num]:
+            # Skip repeated images (logos, headers, footers)
+            if img.get("img_key") in repeated_images:
+                continue
+
             alt_text = alt_texts.get(str(figure_index), "")
             page_elements.append({
                 "role": "Figure",
@@ -328,8 +553,50 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
         page_mcid_ops = []
 
         for block in page_elements:
-            if block["role"] == "L" and block.get("children"):
-                # Build list structure (indirect)
+            if block["role"] == "Table" and block.get("rows"):
+                # Build table structure
+                table_elem = pdf.make_indirect(Dictionary({
+                    "/S": Name("/Table"),
+                    "/P": sect_elem,
+                    "/K": Array(),
+                }))
+
+                for row in block["rows"]:
+                    tr_elem = pdf.make_indirect(Dictionary({
+                        "/S": Name("/TR"),
+                        "/P": table_elem,
+                        "/K": Array(),
+                    }))
+
+                    for cell in row["cells"]:
+                        mcid = cell["mcid"]
+                        cell_role = cell["role"]  # TH or TD
+                        mcr = Dictionary({
+                            "/Type": Name("/MCR"),
+                            "/Pg": page_ref,
+                            "/MCID": mcid,
+                        })
+
+                        cell_elem = pdf.make_indirect(Dictionary({
+                            "/S": Name(f"/{cell_role}"),
+                            "/P": tr_elem,
+                            "/K": Array([mcr]),
+                        }))
+
+                        tr_elem["/K"].append(cell_elem)
+                        page_mcid_ops.append((mcid, cell_role))
+                        parent_tree_nums.append(mcid)
+                        parent_tree_nums.append(cell_elem)
+                        total_elements += 1
+
+                    table_elem["/K"].append(tr_elem)
+                    total_elements += 1
+
+                sect_elem["/K"].append(table_elem)
+                total_elements += 1
+
+            elif block["role"] == "L" and block.get("children"):
+                # Build list structure with Lbl/LBody children
                 list_elem = pdf.make_indirect(Dictionary({
                     "/S": Name("/L"),
                     "/P": sect_elem,
@@ -344,16 +611,29 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                         "/MCID": mcid,
                     })
 
+                    # Create Lbl (bullet) and LBody (text) children
+                    bullet = child.get("bullet", "\u2022")
+                    lbl_elem = pdf.make_indirect(Dictionary({
+                        "/S": Name("/Lbl"),
+                        "/K": Array([String(bullet)]),
+                    }))
+                    lbody_elem = pdf.make_indirect(Dictionary({
+                        "/S": Name("/LBody"),
+                        "/K": Array([mcr]),
+                    }))
+
                     li_elem = pdf.make_indirect(Dictionary({
                         "/S": Name("/LI"),
                         "/P": list_elem,
-                        "/K": Array([mcr]),
+                        "/K": Array([lbl_elem, lbody_elem]),
                     }))
+                    lbl_elem["/P"] = li_elem
+                    lbody_elem["/P"] = li_elem
 
                     list_elem["/K"].append(li_elem)
                     page_mcid_ops.append((mcid, "LI"))
                     parent_tree_nums.append(mcid)
-                    parent_tree_nums.append(li_elem)
+                    parent_tree_nums.append(lbody_elem)
                     total_elements += 1
 
                 sect_elem["/K"].append(list_elem)
