@@ -117,7 +117,7 @@ def classify_content(items, page_height=792, doc_type="slides",
     """Classify content items into semantic roles using heuristics.
 
     Handles both slide decks and text documents differently:
-    - Slides: first large text on page → H1, other large → H2
+    - Slides: largest text on page → H1, everything else → P
     - Documents: only first page top text → H1, bold section headers → H2,
       sub-headers → H3, smaller bold → H4
 
@@ -133,7 +133,6 @@ def classify_content(items, page_height=792, doc_type="slides",
     # Find size statistics
     sizes = [item["size"] for item in items_sorted]
     max_size = max(sizes)
-    median_size = sorted(sizes)[len(sizes) // 2]
 
     # For slides: use per-page max size so each slide's title is detected
     # For documents: use global max for consistent cross-page heading levels
@@ -145,6 +144,8 @@ def classify_content(items, page_height=792, doc_type="slides",
     blocks = []
     bullet_pattern = re.compile(r"^([\u2022\u2023\u25E6\u2043\u2219•\-\*])\s*")
     h1_assigned_this_page = False
+    h1_y = 0
+    h1_line_done = False
 
     for item in items_sorted:
         text = item["text"]
@@ -168,23 +169,27 @@ def classify_content(items, page_height=792, doc_type="slides",
             continue
 
         # Heading classification — different for slides vs documents
-        is_large = size >= ref_max * 0.85 and (bold or size > median_size * 1.3)
-
         if doc_type == "slides":
-            # Slides: first large text on page = H1, rest = H2, smaller = H3
-            # Use per-page max so each slide's title hits the threshold
-            if is_large:
-                if not h1_assigned_this_page and size >= max_size * 0.95:
-                    role = "H1"
-                    h1_assigned_this_page = True
-                elif size >= max_size * 0.85:
-                    role = "H2"
-                elif size >= max_size * 0.70:
-                    role = "H3"
-                else:
-                    role = "P"
+            # Slides: only check the first 3 items at the top of the slide.
+            # The first heading-sized item becomes H1; tag its entire line.
+            # Everything else is P. No H2/H3/H4 for slides.
+            item_index = items_sorted.index(item)
+            if (not h1_assigned_this_page
+                    and item_index < 3
+                    and size >= max_size * 0.95):
+                role = "H1"
+                h1_assigned_this_page = True
+                h1_y = y
+            elif (h1_assigned_this_page
+                      and not h1_line_done
+                      and abs(y - h1_y) < 2
+                      and size >= max_size * 0.90):
+                # Continue the heading line (same y-position, similar size)
+                role = "H1"
             else:
                 role = "P"
+                if h1_assigned_this_page:
+                    h1_line_done = True
         else:
             # Document mode: stricter heading assignment
             # H1: only on first page, largest text at top

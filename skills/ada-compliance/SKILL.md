@@ -49,7 +49,9 @@ Build a fixes JSON object:
 
 **Metadata (always auto-fixable):**
 - `title`: If missing or looks like a filename, read page 1 visually and infer a meaningful title.
-- `author`: If missing, ask the user or leave blank.
+- `author`: If missing, **always ask the user** before proceeding: "Who is the author of this
+  document?" Do not leave blank or skip — author is a required accessibility metadata field.
+  In batch mode, ask once and apply the same author to all files unless the user specifies otherwise.
 - `subject`: If missing, infer from content.
 - `language`: If missing, default to `"en-US"`.
 - `display_doc_title`: Set to `true`.
@@ -65,10 +67,15 @@ Build a fixes JSON object:
 - Build a `link_descriptions` dict mapping `"pageNum_linkIndex"` to description string.
 - Example: `{"2_0": "YouTube: Technical Due Process lecture", "7_0": "DHS AI use case inventory"}`
 
-**Alt text (Claude generates):**
-- If figures missing alt text, read affected pages visually.
-- Generate concise alt text for each image.
-- Add to `alt_texts` dict mapping figure index to text.
+**Alt text (Claude generates — MANDATORY for all figures):**
+- You MUST read EVERY page that contains figures and generate alt text for ALL of them.
+- Do NOT skip figures or ask the user to provide alt text. This is the skill's job.
+- For large documents, read pages in batches (e.g., 10-20 pages at a time) to cover all figures.
+- The figure index is sequential: figure 0 is the first content image in the document,
+  figure 1 is the second, etc. (after filtering out repeated logos/headers).
+- Generate concise but descriptive alt text (1-2 sentences). For charts/graphs, describe
+  the data story. For screenshots, describe the key content shown.
+- Add to `alt_texts` dict mapping figure index (as string) to alt text string.
 
 ### 4. Check for Untagged PDFs
 
@@ -166,7 +173,7 @@ Saved: `filename_accessible.pdf`
 
 #### Path B Checklist:
 ```markdown
-## Auto-Fixed
+## Auto-Fixed (Acrobat Accessibility Checks)
 - [x] Document title set to "<title>"
 - [x] Language set to en-US
 - [x] Display title enabled
@@ -174,6 +181,9 @@ Saved: `filename_accessible.pdf`
 - [x] Bookmarks generated for N pages
 - [x] Descriptive text added to N links
 - [x] Structure tree generated (N elements: headings, lists, figures, tables)
+- [x] Tagged content (BDC/EMC) — all page content marked with structure MCIDs
+- [x] Tagged annotations — link annotations tagged as /Link structure elements
+- [x] Tab order set to structure order on all pages
 
 ## Needs Human Review
 - [ ] Verify heading hierarchy matches document structure (heuristic-based)
@@ -195,29 +205,46 @@ If user asks to save:
 ### 8. Batch Mode
 
 When processing a folder:
-1. Audit all PDFs in a single invocation for speed:
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" --summary file1.pdf file2.pdf file3.pdf 2>/dev/null
-   ```
-   This outputs a JSON array of compact summaries (one Python process for all files).
 
-2. Show summary table:
-   ```
-   | File | Pages | Pass | Warn | Fail | Has Tags | Figures No Alt |
-   |------|-------|------|------|------|----------|----------------|
-   ```
-3. Ask: "Fix all files, or select specific ones?"
-4. Apply fixes using the appropriate path per file
-5. For full audit details on a specific file, re-run without `--summary`:
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" specific_file.pdf 2>/dev/null
-   ```
-6. Apply fixes using batch mode:
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" --batch batch_fixes.json 2>/dev/null
-   ```
-   Where `batch_fixes.json` is an array of `{"input": "path.pdf", "fixes": {...}}` entries.
-7. Show per-file results
+**Step 1: Collect shared metadata upfront.**
+Before auditing, ask the user TWO questions:
+> 1. Who is the author of these documents?
+> 2. Fix all files, or do you want to select specific ones after seeing the summary?
+
+This avoids re-asking per file. Store the author for all files.
+
+**Step 2: Audit all PDFs.**
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" --summary file1.pdf file2.pdf file3.pdf 2>/dev/null
+```
+This outputs a JSON array of compact summaries (one Python process for all files).
+
+Show summary table:
+```
+| File | Pages | Pass | Warn | Fail | Has Tags | Figures No Alt |
+|------|-------|------|------|------|----------|----------------|
+```
+
+**Step 3: Process each file fully.**
+For each file (or user-selected subset):
+1. Run the full audit (not `--summary`) to get link and figure details
+2. Read ALL pages visually to generate alt text for every figure and descriptions for every link
+3. Infer title and subject from content; apply the shared author
+4. Use the appropriate path (A or B) based on whether the file has a structure tree
+5. **Do NOT skip alt text or link descriptions** — generate everything automatically
+
+For Path B files (untagged), process sequentially since each needs pikepdf:
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_structure_generator.py" "<pdf_path>" "<output_accessible.pdf>" "<fixes_json_path>" 2>/dev/null
+```
+
+For Path A files (already tagged), batch mode is available:
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" --batch batch_fixes.json 2>/dev/null
+```
+Where `batch_fixes.json` is an array of `{"input": "path.pdf", "fixes": {...}}` entries.
+
+**Step 4: Show per-file results** with individual checklists and a final summary table.
 
 ## Compliance Reference
 
