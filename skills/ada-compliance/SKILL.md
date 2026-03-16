@@ -211,7 +211,12 @@ If user asks to save:
 ### 8. Batch Mode
 
 When processing a folder:
-1. Audit all PDFs
+1. Audit all PDFs in a single invocation for speed:
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" --summary file1.pdf file2.pdf file3.pdf 2>/dev/null
+   ```
+   This outputs a JSON array of compact summaries (one Python process for all files).
+
 2. Show summary table:
    ```
    | File | Pages | Pass | Warn | Fail | Has Tags | Figures No Alt |
@@ -219,8 +224,16 @@ When processing a folder:
    ```
 3. Ask: "Fix all files, or select specific ones?"
 4. Ask Path A or B (applies to all selected files)
-5. Process selected files
-6. Show per-file results
+5. For full audit details on a specific file, re-run without `--summary`:
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_accessibility_audit.py" specific_file.pdf 2>/dev/null
+   ```
+6. Apply fixes using batch mode:
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/pdf_metadata_fix.py" --batch batch_fixes.json 2>/dev/null
+   ```
+   Where `batch_fixes.json` is an array of `{"input": "path.pdf", "fixes": {...}}` entries.
+7. Show per-file results
 
 ## Compliance Reference
 

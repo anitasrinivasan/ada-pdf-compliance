@@ -162,6 +162,42 @@ def classify_content(items, page_height=792):
     return grouped
 
 
+def _detect_page_images(pike_page):
+    """Detect images on a PDF page by checking XObject resources.
+
+    Returns a list of image names found on the page.
+    """
+    images = []
+    try:
+        resources = pike_page.get("/Resources")
+        if not resources:
+            return images
+        xobjects = resources.get("/XObject")
+        if not xobjects:
+            return images
+        for name, xobj_ref in xobjects.items():
+            try:
+                xobj = xobj_ref
+                if hasattr(xobj, "get"):
+                    subtype = str(xobj.get("/Subtype", ""))
+                    if subtype in ("/Image", "Image"):
+                        # Get image dimensions for context
+                        width = int(xobj.get("/Width", 0))
+                        height = int(xobj.get("/Height", 0))
+                        # Skip tiny images (likely icons/bullets, not content figures)
+                        if width > 50 and height > 50:
+                            images.append({
+                                "name": str(name),
+                                "width": width,
+                                "height": height,
+                            })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return images
+
+
 def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                             fixes=None):
     """Generate a tagged structure tree for an untagged PDF.
@@ -173,7 +209,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
     Args:
         input_path: Path to the input PDF
         output_path: Path for output PDF (default: input_accessible.pdf)
-        alt_texts: Optional dict mapping "page_figIndex" to alt text strings
+        alt_texts: Optional dict mapping figure index (str) to alt text strings
         fixes: Optional dict of metadata fixes to apply (title, subject,
                language, display_doc_title, set_pdfua, link_descriptions)
 
@@ -188,6 +224,8 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
 
     if fixes is None:
         fixes = {}
+    if alt_texts is None:
+        alt_texts = fixes.get("alt_texts", {})
 
     if output_path is None:
         base, ext = os.path.splitext(input_path)
@@ -203,10 +241,14 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
     # Build structure elements per page
     all_page_elements = []
     mcid_counter = 0
+    figure_index = 0  # Global figure counter across all pages
 
     for page_num in range(page_count):
         items = extract_page_content(reader, page_num)
         classified = classify_content(items)
+
+        # Detect images on this page
+        page_images = _detect_page_images(pdf.pages[page_num])
 
         page_elements = []
         for block in classified:
@@ -231,6 +273,20 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                     "text": block["text"],
                 })
                 mcid_counter += 1
+
+        # Add Figure elements for detected images
+        for img in page_images:
+            alt_text = alt_texts.get(str(figure_index), "")
+            page_elements.append({
+                "role": "Figure",
+                "mcid": mcid_counter,
+                "text": "",
+                "alt": alt_text,
+                "image_info": img,
+                "figure_index": figure_index,
+            })
+            mcid_counter += 1
+            figure_index += 1
 
         all_page_elements.append(page_elements)
 
@@ -312,12 +368,18 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                     "/MCID": mcid,
                 })
 
-                elem = pdf.make_indirect(Dictionary({
+                elem_dict = {
                     "/S": Name(f"/{role_name}"),
                     "/P": sect_elem,
                     "/K": Array([mcr]),
                     "/Pg": page_ref,
-                }))
+                }
+
+                # Add /Alt attribute for Figure elements
+                if role_name == "Figure" and block.get("alt"):
+                    elem_dict["/Alt"] = String(block["alt"])
+
+                elem = pdf.make_indirect(Dictionary(elem_dict))
 
                 sect_elem["/K"].append(elem)
                 page_mcid_ops.append((mcid, role_name))
@@ -385,6 +447,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
         "output": output_path,
         "pages_processed": page_count,
         "elements_created": total_elements,
+        "figures_detected": figure_index,
         "bookmarks_created": bookmark_count,
         "metadata_changes": metadata_changes,
         "available": True,

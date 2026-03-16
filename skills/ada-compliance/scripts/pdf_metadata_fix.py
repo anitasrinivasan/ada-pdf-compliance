@@ -215,10 +215,16 @@ def _generate_bookmarks(reader, writer):
     return bookmark_count
 
 
+class _TitleFound(Exception):
+    """Raised to short-circuit text extraction once we have enough data."""
+    pass
+
+
 def _extract_page_title(page):
     """Extract the likely title from a page using font size heuristics.
 
     For slide decks: the largest text near the top of the page is the title.
+    Uses early exit: stops after 30 text items to avoid parsing entire pages.
     """
     text_items = []
 
@@ -248,8 +254,14 @@ def _extract_page_title(page):
             "is_bold": is_bold,
         })
 
+        # Early exit: after 30 items we have enough to find the title
+        if len(text_items) >= 30:
+            raise _TitleFound()
+
     try:
         page.extract_text(visitor_text=visitor)
+    except _TitleFound:
+        pass  # We have enough text items
     except Exception:
         return None
 
@@ -403,14 +415,38 @@ def _resolve(obj):
 
 
 def main():
-    if len(sys.argv) < 3:
+    args = sys.argv[1:]
+
+    # Batch mode: --batch <batch_json>
+    if len(args) >= 2 and args[0] == "--batch":
+        batch_path = args[1]
+        if not os.path.isfile(batch_path):
+            print(json.dumps({"error": f"Batch JSON not found: {batch_path}"}))
+            sys.exit(1)
+        with open(batch_path, "r") as f:
+            batch = json.load(f)
+        results = []
+        for entry in batch:
+            input_path = entry.get("input")
+            fixes = entry.get("fixes", {})
+            if not input_path or not os.path.isfile(input_path):
+                results.append({"input": input_path, "error": "File not found"})
+                continue
+            result = apply_fixes(input_path, fixes)
+            results.append(result)
+        print(json.dumps(results, indent=2, default=str))
+        return
+
+    # Single-file mode (backwards compatible)
+    if len(args) < 2:
         print(json.dumps({
-            "error": "Usage: python3 pdf_metadata_fix.py <path_to_pdf> <path_to_fixes_json>"
+            "error": "Usage: python3 pdf_metadata_fix.py <pdf> <fixes_json>\n"
+                     "       python3 pdf_metadata_fix.py --batch <batch_json>"
         }))
         sys.exit(1)
 
-    pdf_path = sys.argv[1]
-    fixes_path = sys.argv[2]
+    pdf_path = args[0]
+    fixes_path = args[1]
 
     if not os.path.isfile(pdf_path):
         print(json.dumps({"error": f"PDF not found: {pdf_path}"}))

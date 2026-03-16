@@ -818,18 +818,64 @@ def audit_pdf(filepath):
     return result
 
 
+def summarize_audit(result):
+    """Return a compact summary of an audit result (no font list, heading sequence, etc.)."""
+    if "error" in result:
+        return result
+
+    return {
+        "file": result.get("file"),
+        "filename": result.get("filename"),
+        "page_count": result.get("page_count"),
+        "summary": result.get("summary"),
+        "has_structure_tree": result.get("structure", {}).get("has_structure_tree", False),
+        "figures_missing_alt": result.get("structure", {}).get("figure_analysis", {}).get("without_alt", 0),
+        "non_descriptive_links": result.get("links", {}).get("non_descriptive", 0),
+        "has_bookmarks": result.get("navigation", {}).get("has_bookmarks", False),
+        "bookmark_count": result.get("navigation", {}).get("bookmark_count", 0),
+        "unembedded_fonts": result.get("fonts", {}).get("not_embedded", 0),
+        "key_issues": [
+            check_name
+            for check_name, check in result.get("all_checks", {}).items()
+            if check.get("status") in ("fail", "warn")
+        ],
+    }
+
+
 def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: python3 pdf_accessibility_audit.py <path_to_pdf>"}))
+    args = sys.argv[1:]
+
+    # Parse flags
+    summary_mode = False
+    filepaths = []
+    for arg in args:
+        if arg == "--summary":
+            summary_mode = True
+        else:
+            filepaths.append(arg)
+
+    if not filepaths:
+        print(json.dumps({"error": "Usage: python3 pdf_accessibility_audit.py [--summary] <pdf> [pdf2 pdf3 ...]"}))
         sys.exit(1)
 
-    filepath = sys.argv[1]
-    if not os.path.isfile(filepath):
-        print(json.dumps({"error": f"File not found: {filepath}"}))
-        sys.exit(1)
+    # Process all files
+    results = []
+    for filepath in filepaths:
+        global _page_id_cache
+        _page_id_cache = {}  # Reset cache between files
+        if not os.path.isfile(filepath):
+            results.append({"file": filepath, "error": f"File not found: {filepath}"})
+            continue
+        result = audit_pdf(filepath)
+        if summary_mode:
+            result = summarize_audit(result)
+        results.append(result)
 
-    result = audit_pdf(filepath)
-    print(json.dumps(result, indent=2, default=str))
+    # Backwards compatible: single file = single object, multiple = array
+    if len(results) == 1:
+        print(json.dumps(results[0], indent=2, default=str))
+    else:
+        print(json.dumps(results, indent=2, default=str))
 
 
 if __name__ == "__main__":
