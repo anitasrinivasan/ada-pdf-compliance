@@ -109,7 +109,7 @@ When a PDF has no structure tree (common with Google Slides exports), you're off
 
 **Path A -- Acrobat + plugin (default)** -- You first run Acrobat Pro's Autotag to generate a structure tree, then provide the tagged file back. The plugin applies all remaining fixes (metadata, bookmarks, link descriptions, alt text, PDF/UA flag) on top of Acrobat's structure tree. Output opens everywhere including macOS Preview.
 
-**Path B -- Maximum automation (opt-in)** -- Uses `pikepdf` to generate a structure tree automatically (headings, paragraphs, lists, figures) along with all other fixes. Detects images and creates `/Figure` tags for alt text. Output works in browsers and Acrobat but not macOS Preview.
+**Path B -- Maximum automation (opt-in)** -- Uses `pikepdf` to generate a complete structure tree automatically: headings (H1-H4) via font-size heuristics, paragraphs, bullet lists with proper Lbl/LBody structure, tables with TH/TD header detection via x-position clustering, and `/Figure` tags for images (with smart filtering to exclude logos, icons, and decorative borders). Also applies all metadata fixes in a single pass. Output works in browsers and Acrobat but not macOS Preview.
 
 ## Requirements
 

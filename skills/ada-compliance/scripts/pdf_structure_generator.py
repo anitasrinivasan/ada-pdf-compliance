@@ -81,8 +81,8 @@ def extract_page_content(reader, page_num):
 
     try:
         reader.pages[page_num].extract_text(visitor_text=visitor)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: text extraction failed on page {page_num + 1}: {e}", file=sys.stderr)
 
     return items
 
@@ -183,8 +183,6 @@ def classify_content(items, page_height=792, doc_type="slides",
                     role = "H3"
                 else:
                     role = "P"
-            elif size < median_size * 0.8:
-                role = "P"
             else:
                 role = "P"
         else:
@@ -202,8 +200,6 @@ def classify_content(items, page_height=792, doc_type="slides",
                 role = "H3"
             elif bold and size >= ref_max * 0.55:
                 role = "H4"
-            elif size < median_size * 0.8:
-                role = "P"
             else:
                 role = "P"
 
@@ -348,7 +344,11 @@ def _detect_page_images(pike_page, image_counts=None):
                                 continue
 
                         # Track for repeated-image filtering
-                        img_key = f"{width}x{height}"
+                        # Include colorspace and bits to reduce false collisions
+                        # between different images that share dimensions
+                        cs = str(xobj.get("/ColorSpace", ""))
+                        bpc = str(xobj.get("/BitsPerComponent", ""))
+                        img_key = f"{width}x{height}_{cs}_{bpc}"
                         if image_counts is not None:
                             image_counts[img_key] = image_counts.get(img_key, 0) + 1
 
@@ -358,7 +358,8 @@ def _detect_page_images(pike_page, image_counts=None):
                             "height": height,
                             "img_key": img_key,
                         })
-            except Exception:
+            except Exception as e:
+                print(f"Warning: failed to inspect XObject {name}: {e}", file=sys.stderr)
                 continue
     except Exception:
         pass
@@ -700,8 +701,8 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
         bookmark_count = _generate_bookmarks_from_content(
             pdf, reader, all_page_elements
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: bookmark generation failed: {e}", file=sys.stderr)
 
     # Apply metadata fixes directly with pikepdf so the output doesn't
     # need to go through pypdf's PdfWriter (which corrupts pikepdf streams).
@@ -810,7 +811,8 @@ def _apply_pikepdf_link_descriptions(pdf, link_descs):
                     updated += 1
                     break
                 link_idx += 1
-        except Exception:
+        except Exception as e:
+            print(f"Warning: failed to set link description for {key}: {e}", file=sys.stderr)
             continue
     return updated
 
@@ -874,8 +876,19 @@ def main():
         sys.exit(1)
 
     input_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else None
-    fixes_path = sys.argv[3] if len(sys.argv) > 3 else None
+    output_path = None
+    fixes_path = None
+
+    # Parse remaining args: distinguish output PDF from fixes JSON
+    for arg in sys.argv[2:]:
+        if arg.lower().endswith(".json"):
+            fixes_path = arg
+        elif arg.lower().endswith(".pdf"):
+            output_path = arg
+        elif output_path is None:
+            output_path = arg
+        else:
+            fixes_path = arg
 
     if not os.path.isfile(input_path):
         print(json.dumps({"error": f"File not found: {input_path}"}))

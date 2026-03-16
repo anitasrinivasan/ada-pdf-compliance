@@ -53,7 +53,7 @@ Build a fixes JSON object:
 - `subject`: If missing, infer from content.
 - `language`: If missing, default to `"en-US"`.
 - `display_doc_title`: Set to `true`.
-- `set_tagged`: Set to `true` if structure tree exists.
+- `set_tagged`: Set to `true` ONLY after confirming the PDF has a structure tree (from Acrobat Autotag or Path B). Do NOT set on an untagged PDF — it would make the audit falsely report the PDF as tagged.
 - `set_pdfua`: Set to `true`.
 
 **Bookmarks (always auto-fixable):**

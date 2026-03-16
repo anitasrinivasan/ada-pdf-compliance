@@ -186,6 +186,7 @@ def analyze_structure_tree(reader):
     lists = []
     visited_ids = set()  # Cycle detection
     MAX_DEPTH = 100
+    page_id_cache = _build_page_id_cache(reader)
 
     def walk(node, depth=0, page_hint=None):
         nonlocal figure_index
@@ -209,7 +210,7 @@ def analyze_structure_tree(reader):
         current_page = page_hint
         if pg:
             pg_obj = _resolve(pg)
-            current_page = _find_page_number(reader, pg_obj)
+            current_page = _find_page_number(page_id_cache, pg_obj)
 
         # Headings
         if tag in ("/H1", "/H2", "/H3", "/H4", "/H5", "/H6", "H1", "H2", "H3", "H4", "H5", "H6"):
@@ -471,8 +472,8 @@ def _resolve(obj):
             if resolved is obj:
                 break
             obj = resolved
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to resolve indirect object: {e}", file=sys.stderr)
     return obj
 
 
@@ -529,22 +530,23 @@ def _check_pdfua_xmp(reader):
         return None
 
 
-_page_id_cache = {}
+def _build_page_id_cache(reader):
+    """Build a mapping from page object id to 1-indexed page number."""
+    cache = {}
+    for i, page in enumerate(reader.pages):
+        try:
+            cache[id(page.get_object())] = i + 1
+        except Exception:
+            pass
+    return cache
 
 
-def _find_page_number(reader, page_obj):
-    """Find the page number for a page object (cached)."""
-    global _page_id_cache
-    if not _page_id_cache:
-        # Build cache on first call
-        for i, page in enumerate(reader.pages):
-            try:
-                _page_id_cache[id(page.get_object())] = i + 1
-            except Exception:
-                pass
+def _find_page_number(page_id_cache, page_obj):
+    """Find the page number for a page object using a pre-built cache."""
     try:
-        return _page_id_cache.get(id(page_obj))
-    except Exception:
+        return page_id_cache.get(id(page_obj))
+    except Exception as e:
+        print(f"Warning: page number lookup failed: {e}", file=sys.stderr)
         return None
 
 
@@ -715,8 +717,8 @@ def _count_bookmarks(outlines, max_count=500):
                 current = _resolve(next_item)
             else:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: error counting bookmarks: {e}", file=sys.stderr)
     return count
 
 
@@ -861,8 +863,6 @@ def main():
     # Process all files
     results = []
     for filepath in filepaths:
-        global _page_id_cache
-        _page_id_cache = {}  # Reset cache between files
         if not os.path.isfile(filepath):
             results.append({"file": filepath, "error": f"File not found: {filepath}"})
             continue

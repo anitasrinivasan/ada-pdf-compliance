@@ -167,8 +167,8 @@ def _embed_alt_texts(writer, alt_texts):
                 try:
                     node[NameObject("/Alt")] = TextStringObject(alt_text)
                     updated_count[0] += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Warning: failed to set alt text on figure {idx_str}: {e}", file=sys.stderr)
             figure_index[0] += 1
 
         kids = node.get("/K")
@@ -209,8 +209,8 @@ def _generate_bookmarks(reader, writer):
             try:
                 writer.add_outline_item(title=title, page_number=page_num)
                 bookmark_count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: failed to add bookmark for page {page_num + 1}: {e}", file=sys.stderr)
 
     return bookmark_count
 
@@ -262,7 +262,8 @@ def _extract_page_title(page):
         page.extract_text(visitor_text=visitor)
     except _TitleFound:
         pass  # We have enough text items
-    except Exception:
+    except Exception as e:
+        print(f"Warning: text extraction failed during title detection: {e}", file=sys.stderr)
         return None
 
     if not text_items:
@@ -328,7 +329,8 @@ def _fix_link_descriptions(writer, link_descs):
                     updated_count += 1
                     break
                 link_idx += 1
-        except Exception:
+        except Exception as e:
+            print(f"Warning: failed to set link description for {key}: {e}", file=sys.stderr)
             continue
 
     return updated_count
@@ -375,8 +377,8 @@ def _set_pdfua_xmp(writer):
             new_stream[NameObject("/Type")] = NameObject("/Metadata")
             new_stream[NameObject("/Subtype")] = NameObject("/XML")
             root[NameObject("/Metadata")] = writer._add_object(new_stream)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: failed to update existing XMP metadata: {e}", file=sys.stderr)
     else:
         # Create minimal XMP with PDF/UA identifier
         xmp = f"""<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>
@@ -409,8 +411,8 @@ def _resolve(obj):
             if resolved is obj:
                 break
             obj = resolved
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to resolve indirect object: {e}", file=sys.stderr)
     return obj
 
 
