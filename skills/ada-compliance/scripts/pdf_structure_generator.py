@@ -668,6 +668,35 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                 parent_tree_nums.append(elem)
                 total_elements += 1
 
+        # Tag link annotations on this page as /Link structure elements
+        # with /OBJR (object reference) so Acrobat's TaggedAnnots check passes
+        try:
+            annots = pike_page.get("/Annots")
+            if annots:
+                for annot in annots:
+                    if not hasattr(annot, "get"):
+                        continue
+                    subtype = str(annot.get("/Subtype", ""))
+                    if subtype not in ("/Link", "Link"):
+                        continue
+                    objr = Dictionary({
+                        "/Type": Name("/OBJR"),
+                        "/Pg": page_ref,
+                        "/Obj": annot,
+                    })
+                    link_elem = pdf.make_indirect(Dictionary({
+                        "/S": Name("/Link"),
+                        "/P": sect_elem,
+                        "/K": Array([objr]),
+                    }))
+                    sect_elem["/K"].append(link_elem)
+                    total_elements += 1
+        except Exception as e:
+            print(f"Warning: failed to tag annotations on page {page_num + 1}: {e}", file=sys.stderr)
+
+        # Set tab order to follow structure order (fixes Acrobat TabOrder check)
+        pike_page["/Tabs"] = Name("/S")
+
         doc_elem["/K"].append(sect_elem)
 
         # NOTE: We intentionally skip inserting BDC/EMC marked content
