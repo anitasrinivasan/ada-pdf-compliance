@@ -112,108 +112,244 @@ def detect_document_type(all_page_items, page_count):
     return "slides"
 
 
-def classify_content(items, page_height=792, doc_type="slides",
-                     is_first_page=False, global_max_size=None):
-    """Classify content items into semantic roles using heuristics.
+def _merge_fragments_into_lines(items, y_tolerance=3):
+    """Merge text fragments at similar y-positions into logical lines.
 
-    Handles both slide decks and text documents differently:
-    - Slides: largest text on page → H1, everything else → P
-    - Documents: only first page top text → H1, bold section headers → H2,
-      sub-headers → H3, smaller bold → H4
+    pypdf's visitor API often splits a single visual line into many tiny
+    fragments. This groups fragments at the same vertical position and
+    concatenates them in reading order (left to right).
 
-    Returns a list of classified blocks with bullet text preserved for
-    Lbl/LBody splitting.
+    Returns a list of merged line dicts with combined text and max size.
     """
     if not items:
         return []
 
-    # Sort by y-position descending (top of page first)
-    items_sorted = sorted(items, key=lambda x: -x["y"])
+    # Sort by y descending (top first), then x ascending (left to right)
+    sorted_items = sorted(items, key=lambda x: (-x["y"], x["x"]))
 
-    # Find size statistics
-    sizes = [item["size"] for item in items_sorted]
+    lines = []
+    current_line = None
+
+    for item in sorted_items:
+        if current_line is None:
+            current_line = {
+                "fragments": [item],
+                "y": item["y"],
+            }
+        elif abs(item["y"] - current_line["y"]) <= y_tolerance:
+            current_line["fragments"].append(item)
+        else:
+            lines.append(current_line)
+            current_line = {
+                "fragments": [item],
+                "y": item["y"],
+            }
+
+    if current_line:
+        lines.append(current_line)
+
+    # Build merged line items
+    merged = []
+    for line in lines:
+        frags = sorted(line["fragments"], key=lambda f: f["x"])
+        text = " ".join(f["text"] for f in frags)
+        # Clean up double spaces from joining
+        text = re.sub(r"  +", " ", text).strip()
+        if not text:
+            continue
+        merged.append({
+            "text": text,
+            "size": max(f["size"] for f in frags),
+            "x": frags[0]["x"],
+            "y": line["y"],
+            "bold": any(f["bold"] for f in frags),
+            "font": frags[0].get("font", ""),
+        })
+
+    return merged
+
+
+def detect_page_headings(items, doc_type="slides", is_first_page=False,
+                         global_max_size=None):
+    """Independently detect headings from merged lines on a page.
+
+    Completely decoupled from MCID/fragment processing. Works on merged
+    lines to produce complete heading text.
+
+    For slides: finds the bold line with the largest font size. If no bold
+    line qualifies, uses the largest-size line. Handles inverted coordinate
+    systems (low y = top of page) common in presentation exports.
+
+    For documents: uses size thresholds relative to global max to assign
+    H1-H4 levels.
+
+    Returns a list of heading dicts: [{"role": "H1", "text": "..."}]
+    """
+    lines = _merge_fragments_into_lines(items)
+    if not lines:
+        return []
+
+    sizes = [line["size"] for line in lines]
     max_size = max(sizes)
 
-    # For slides: use per-page max size so each slide's title is detected
-    # For documents: use global max for consistent cross-page heading levels
     if doc_type == "slides":
-        ref_max = max_size  # per-page max
-    else:
-        ref_max = global_max_size if global_max_size else max_size
+        # Find bold lines at or near max font size
+        candidates = [l for l in lines
+                      if l["bold"] and l["size"] >= max_size * 0.90]
+        if not candidates:
+            # Fall back: any line at max size
+            candidates = [l for l in lines
+                          if l["size"] >= max_size * 0.95]
+        if not candidates:
+            return []
 
-    blocks = []
+        # Sort by y ascending — in many PDF exports (Google Slides,
+        # PowerPoint) low y = top of page.
+        candidates.sort(key=lambda l: l["y"])
+
+        # Filter out bad candidates: y=0 glitches, tiny fragments,
+        # text starting with punctuation or lowercase (continuation).
+        def _is_valid_heading(text):
+            if len(text) < 3:
+                return False
+            if text[0] in ",.;:!?)]}":
+                return False
+            # Starts with lowercase letter → likely a fragment
+            if text[0].islower():
+                return False
+            return True
+
+        candidates = [c for c in candidates
+                      if c["y"] > 1 and _is_valid_heading(c["text"].strip())]
+        if not candidates:
+            return []
+
+        # Combine adjacent max-size candidates into one heading for
+        # multi-line titles (e.g. "Class 6: Regulating\n(Generative) AI").
+        # Only combine lines that are physically close (y-gap < 60) to
+        # avoid merging separate items on agenda slides.
+        title_size = candidates[0]["size"]
+        parts = [candidates[0]["text"].strip()]
+        prev_y = candidates[0]["y"]
+
+        for c in candidates[1:]:
+            text = c["text"].strip()
+            if c["size"] < title_size * 0.95:
+                break  # Different size → not part of the same title
+            if abs(c["y"] - prev_y) > 60:
+                break  # Too far apart → separate items, not wrapped title
+            parts.append(text)
+            prev_y = c["y"]
+
+        heading_text = " ".join(parts).strip()
+        heading_text = re.sub(r"\s+", " ", heading_text).strip()
+        if not heading_text:
+            return []
+        return [{"role": "H1", "text": heading_text}]
+
+    else:
+        # Document mode: size-based heading hierarchy
+        ref_max = global_max_size if global_max_size else max_size
+        headings = []
+        h1_done = False
+        for line in lines:
+            size = line["size"]
+            bold = line["bold"]
+            if is_first_page and not h1_done and size >= ref_max * 0.95:
+                headings.append({"role": "H1", "text": line["text"]})
+                h1_done = True
+            elif bold and size >= ref_max * 0.85:
+                headings.append({"role": "H2", "text": line["text"]})
+            elif bold and size >= ref_max * 0.70:
+                headings.append({"role": "H3", "text": line["text"]})
+            elif bold and size >= ref_max * 0.55:
+                headings.append({"role": "H4", "text": line["text"]})
+        return headings
+
+
+def classify_content(items, page_height=792, doc_type="slides",
+                     is_first_page=False, global_max_size=None):
+    """Classify content items into body-level roles (P, LI).
+
+    Headings are detected independently by detect_page_headings() and
+    inserted into the structure tree with /ActualText — they do NOT flow
+    through the MCID pipeline.
+
+    Returns a list of classified blocks with bullet text preserved for
+    Lbl/LBody splitting. All text blocks are P or LI (no heading roles).
+    """
+    if not items:
+        return []
+
+    lines = _merge_fragments_into_lines(items)
+    if not lines:
+        return []
+
+    y_tolerance = 3
+    line_roles = {}  # line_y → role
+
     bullet_pattern = re.compile(r"^([\u2022\u2023\u25E6\u2043\u2219•\-\*])\s*")
-    h1_assigned_this_page = False
-    h1_y = 0
-    h1_line_done = False
+
+    for line in lines:
+        text = line["text"]
+        bullet_match = bullet_pattern.match(text)
+        if bullet_match:
+            line_roles[line["y"]] = "LI"
+        else:
+            line_roles[line["y"]] = "P"
+
+    # Map roles back to original fragments (one block per fragment)
+    items_sorted = sorted(items, key=lambda x: (-x["y"], x["x"]))
+    blocks = []
 
     for item in items_sorted:
         text = item["text"]
-        size = item["size"]
-        y = item["y"]
-        bold = item["bold"]
-
-        # Check for bullet
-        bullet_match = bullet_pattern.match(text)
-        if bullet_match:
-            bullet_char = bullet_match.group(1)
-            body_text = bullet_pattern.sub("", text)
-            blocks.append({
-                "role": "LI",
-                "text": body_text,
-                "bullet": bullet_char,
-                "size": size,
-                "x": item["x"],
-                "y": y,
-            })
+        if not text or not text.strip():
             continue
+        text = text.strip()
+        y = item["y"]
 
-        # Heading classification — different for slides vs documents
-        if doc_type == "slides":
-            # Slides: only check the first 3 items at the top of the slide.
-            # The first heading-sized item becomes H1; tag its entire line.
-            # Everything else is P. No H2/H3/H4 for slides.
-            item_index = items_sorted.index(item)
-            if (not h1_assigned_this_page
-                    and item_index < 3
-                    and size >= max_size * 0.95):
-                role = "H1"
-                h1_assigned_this_page = True
-                h1_y = y
-            elif (h1_assigned_this_page
-                      and not h1_line_done
-                      and abs(y - h1_y) < 2
-                      and size >= max_size * 0.90):
-                # Continue the heading line (same y-position, similar size)
-                role = "H1"
+        role = "P"
+        matched_line_y = y
+        for line_y, line_role in line_roles.items():
+            if abs(y - line_y) <= y_tolerance:
+                role = line_role
+                matched_line_y = line_y
+                break
+
+        if role == "LI":
+            bullet_match = bullet_pattern.match(text)
+            if bullet_match:
+                bullet_char = bullet_match.group(1)
+                body_text = bullet_pattern.sub("", text)
+                blocks.append({
+                    "role": "LI",
+                    "text": body_text,
+                    "bullet": bullet_char,
+                    "size": item["size"],
+                    "x": item["x"],
+                    "y": y,
+                    "line_y": matched_line_y,
+                })
             else:
-                role = "P"
-                if h1_assigned_this_page:
-                    h1_line_done = True
-        else:
-            # Document mode: stricter heading assignment
-            # H1: only on first page, largest text at top
-            # H2: bold text at the same size as section headers
-            # H3: bold text at a smaller tier
-            # H4: even smaller bold
-            if is_first_page and not h1_assigned_this_page and size >= ref_max * 0.95:
-                role = "H1"
-                h1_assigned_this_page = True
-            elif bold and size >= ref_max * 0.85:
-                role = "H2"
-            elif bold and size >= ref_max * 0.70:
-                role = "H3"
-            elif bold and size >= ref_max * 0.55:
-                role = "H4"
-            else:
-                role = "P"
+                blocks.append({
+                    "role": "LI",
+                    "text": text,
+                    "bullet": "\u2022",
+                    "size": item["size"],
+                    "x": item["x"],
+                    "y": y,
+                    "line_y": matched_line_y,
+                })
+            continue
 
         blocks.append({
             "role": role,
             "text": text,
-            "size": size,
+            "size": item["size"],
             "x": item["x"],
             "y": y,
+            "line_y": matched_line_y,
         })
 
     # Group consecutive list items
@@ -545,11 +681,23 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
 
     # Phase 3: Classify content and build structure elements
     all_page_elements = []
+    all_page_headings = []  # Independent heading detection per page
     mcid_counter = 0
     figure_index = 0
 
     for page_num in range(page_count):
         items = all_raw_items[page_num]
+
+        # Independent heading detection (decoupled from MCID pipeline)
+        page_headings = detect_page_headings(
+            items,
+            doc_type=doc_type,
+            is_first_page=(page_num == 0),
+            global_max_size=global_max_size,
+        )
+        all_page_headings.append(page_headings)
+
+        # Body content classification (P, LI only — no heading roles)
         classified = classify_content(
             items,
             doc_type=doc_type,
@@ -582,6 +730,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
                     "role": block["role"],
                     "mcid": mcid_counter,
                     "text": block["text"],
+                    "line_y": block.get("line_y"),
                 })
                 mcid_counter += 1
 
@@ -649,7 +798,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
     all_page_mcid_data = {}  # page_num → list of (mcid, role) for BDC/EMC insertion
 
     for page_num, page_elements in enumerate(all_page_elements):
-        if not page_elements:
+        if not page_elements and not all_page_headings[page_num]:
             continue
 
         pike_page = pdf.pages[page_num]
@@ -666,7 +815,24 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
         # Track MCIDs for this page's content stream
         page_mcid_ops = []
 
+        # Insert headings FIRST — detected independently, with /ActualText.
+        # These do NOT use MCIDs; the heading text lives on the element.
+        for heading in all_page_headings[page_num]:
+            role_name = heading["role"]
+            heading_text = heading["text"]
+            elem = pdf.make_indirect(Dictionary({
+                "/S": Name(f"/{role_name}"),
+                "/P": sect_elem,
+                "/ActualText": String(heading_text),
+                "/K": Array(),
+                "/Pg": page_ref,
+            }))
+            sect_elem["/K"].append(elem)
+            total_elements += 1
+
+        # Now process body content (P, LI, Table, Figure — no heading roles)
         for block in page_elements:
+
             if block["role"] == "Table" and block.get("rows"):
                 # Build table structure
                 table_elem = pdf.make_indirect(Dictionary({
@@ -869,7 +1035,7 @@ def generate_structure_tree(input_path, output_path=None, alt_texts=None,
     bookmark_count = 0
     try:
         bookmark_count = _generate_bookmarks_from_content(
-            pdf, reader, all_page_elements
+            pdf, reader, all_page_headings, all_page_elements
         )
     except Exception as e:
         print(f"Warning: bookmark generation failed: {e}", file=sys.stderr)
@@ -987,30 +1153,27 @@ def _apply_pikepdf_link_descriptions(pdf, link_descs):
     return updated
 
 
-def _generate_bookmarks_from_content(pdf, reader, all_page_elements):
-    """Generate bookmarks using content already extracted during classification.
+def _generate_bookmarks_from_content(pdf, reader, all_page_headings,
+                                     all_page_elements):
+    """Generate bookmarks from independently detected headings.
 
-    Uses pikepdf's outline API since pypdf text extraction won't work after
-    BDC/EMC operators are inserted into the content streams.
+    Uses pikepdf's outline API. Heading text comes from all_page_headings
+    (independent of MCID pipeline). Falls back to first text block on pages
+    without headings.
     """
     with pdf.open_outline() as outline:
         count = 0
-        for page_num, page_elements in enumerate(all_page_elements):
-            if not page_elements:
-                continue
-
-            # Find the first H1 element on this page — that's the slide title
+        for page_num in range(len(all_page_headings)):
+            headings = all_page_headings[page_num]
             title = None
-            for block in page_elements:
-                if block.get("role") in ("H1", "H2"):
-                    title = block.get("text", "").strip()
-                    break
 
-            if not title:
+            if headings:
+                # Use the first heading (H1) as the bookmark title
+                title = headings[0]["text"].strip()
+            elif page_num < len(all_page_elements):
                 # Fall back to first text block
-                for block in page_elements:
+                for block in all_page_elements[page_num]:
                     if block.get("children"):
-                        # Skip list containers
                         continue
                     text = block.get("text", "").strip()
                     if text and len(text) > 2:
@@ -1018,10 +1181,9 @@ def _generate_bookmarks_from_content(pdf, reader, all_page_elements):
                         break
 
             if title:
+                title = re.sub(r"\s+", " ", title).strip()
                 if len(title) > 80:
                     title = title[:77] + "..."
-                # Clean up whitespace
-                title = re.sub(r"\s+", " ", title).strip()
                 oi = pikepdf.OutlineItem(title, page_num)
                 outline.root.append(oi)
                 count += 1
