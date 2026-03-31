@@ -1,18 +1,18 @@
 # ADA PDF Compliance
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that analyzes and fixes PDF accessibility for ADA/Section 508/PDF-UA compliance.
+A [Claude Code](https://claude.ai/code) plugin that analyzes and fixes PDF accessibility for ADA/Section 508/PDF-UA compliance.
 
 ## The Problem
 
-Public institutions -- universities, government agencies, courts -- are required by law to make their digital documents accessible to people with disabilities. For PDFs, this means complying with:
+Public institutions — universities, government agencies, courts — are required by law to make their digital documents accessible to people with disabilities. For PDFs, this means complying with:
 
-- **Section 508** of the Rehabilitation Act -- requires WCAG 2.0 Level AA conformance for all electronic documents published by federally funded organizations
-- **ADA Title II** -- requires state and local governments (including public universities) to make their services accessible, which courts have interpreted to include digital documents
-- **PDF/UA (ISO 14289)** -- the technical standard defining what an "accessible PDF" actually looks like at the file format level
+- **Section 508** of the Rehabilitation Act — requires WCAG 2.0 Level AA conformance for all electronic documents published by federally funded organizations
+- **ADA Title II** — requires state and local governments (including public universities) to make their services accessible, which courts have interpreted to include digital documents
+- **PDF/UA (ISO 14289)** — the technical standard defining what an "accessible PDF" actually looks like at the file format level
 
 In practice, most PDFs exported from Google Slides, PowerPoint, or Word are **not compliant**. They're missing critical accessibility metadata that screen readers need: no document language set, no structure tree (so headings and lists are invisible to assistive tech), no alt text on images, raw URLs instead of descriptive link text, no bookmarks for navigation.
 
-Fixing these issues manually in Adobe Acrobat is tedious and error-prone -- especially for course materials where faculty may need to remediate dozens of slide decks per semester.
+Fixing these issues manually in Adobe Acrobat is tedious and error-prone — especially for course materials where faculty may need to remediate dozens of slide decks per semester.
 
 ## What Compliance Requires
 
@@ -61,31 +61,29 @@ Point it at a PDF (or folder of PDFs) and it **audits** every compliance require
 
 ## Install
 
-### Option 1: Plugin Marketplace (recommended)
-
-In Claude Code, run:
+### From the Claude Code Plugin Marketplace
 
 ```
-/plugin marketplace add https://github.com/anitasrinivasan/ada-pdf-compliance.git
 /plugin install ada-pdf-compliance
 ```
 
-### Option 2: Local Install
+### Local Install (for development)
 
 ```bash
 git clone https://github.com/anitasrinivasan/ada-pdf-compliance.git
 claude --plugin-dir ./ada-pdf-compliance
 ```
 
-### Python Dependency
+### Python Dependencies
 
 ```bash
-pip install pypdf
+pip install pypdf            # Required
+pip install pikepdf          # Optional — enables full structure tree generation
 ```
 
 ## Usage
 
-Single file:
+Invoke the skill directly:
 
 ```
 /ada-pdf-compliance:ada-check path/to/document.pdf
@@ -97,7 +95,7 @@ Batch-process a folder:
 /ada-pdf-compliance:ada-check path/to/folder/
 ```
 
-Or just describe what you want:
+Or just describe what you want — Claude will invoke the skill automatically:
 
 > "Make this PDF ADA compliant"
 > "Check the accessibility of my slides"
@@ -107,18 +105,20 @@ Or just describe what you want:
 
 When a PDF has no structure tree (common with Google Slides exports), you're offered a choice:
 
-**Path A -- Acrobat + plugin (default)** -- You first run Acrobat Pro's Autotag to generate a structure tree, then provide the tagged file back. The plugin applies all remaining fixes (metadata, bookmarks, link descriptions, alt text, PDF/UA flag) on top of Acrobat's structure tree. Output opens everywhere including macOS Preview.
+**Path A — Acrobat + plugin (default)** — You first run Acrobat Pro's Autotag to generate a structure tree, then provide the tagged file back. The plugin applies all remaining fixes (metadata, bookmarks, link descriptions, alt text, PDF/UA flag) on top of Acrobat's structure tree. Output opens everywhere including macOS Preview.
 
-**Path B -- Maximum automation (opt-in)** -- Uses `pikepdf` to generate a complete structure tree automatically: headings (H1-H4) via font-size heuristics, paragraphs, bullet lists with proper Lbl/LBody structure, tables with TH/TD header detection via x-position clustering, and `/Figure` tags for images (with smart filtering to exclude logos, icons, and decorative borders). Also applies all metadata fixes in a single pass. Output works in browsers and Acrobat but not macOS Preview.
+**Path B — Full automation (opt-in)** — Uses `pikepdf` to generate a complete structure tree automatically: headings via font-size heuristics, paragraphs, bullet lists with proper Lbl/LBody structure, tables with TH/TD header detection, and `/Figure` tags for images. Also injects BDC/EMC marked content operators, tags link annotations, and sets tab order to structure order on all pages. All metadata fixes applied in a single pass. Output works in browsers and Acrobat but not macOS Preview.
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Claude Code](https://claude.ai/code) v1.0.33+
 - Python 3.8+
 - `pypdf` (required): `pip install pypdf`
 - `pikepdf` (optional, for Path B): `pip install pikepdf`
 
-## Example Output (Path A)
+## Example Output
+
+### Path A (Acrobat + plugin)
 
 ```
 ## Auto-Fixed
@@ -140,9 +140,28 @@ When a PDF has no structure tree (common with Google Slides exports), you're off
 Saved: document_accessible.pdf
 ```
 
+### Path B (full automation)
+
+```
+## Auto-Fixed
+- [x] Document title set to "AI Spring Class 5"
+- [x] Language set to en-US
+- [x] Display title enabled
+- [x] PDF/UA identifier added
+- [x] Bookmarks generated for 98 pages
+- [x] Descriptive text added to 12 links
+- [x] Structure tree generated (1,459 elements: headings, lists, figures, tables)
+- [x] Tagged content (BDC/EMC) — all page content marked with structure MCIDs
+- [x] Tagged annotations — link annotations tagged as /Link structure elements
+- [x] Tab order set to structure order on all pages
+- [x] Alt text added to 78 figures
+
+Saved: AI Spring Class 5_accessible.pdf
+```
+
 ## Compliance Reference
 
-The full compliance checklist (18 checks across Critical, Important, and Advisory tiers) is bundled at `skills/ada-compliance/references/compliance-checklist.md`, including remediation instructions for each issue type.
+The full compliance checklist (18 checks across Critical, Important, and Advisory tiers) is bundled at `skills/ada-compliance/references/compliance-checklist.md`, including Acrobat remediation instructions for each issue type.
 
 ## License
 
